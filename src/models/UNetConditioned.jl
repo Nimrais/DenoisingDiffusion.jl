@@ -2,14 +2,14 @@ import Flux._big_show
 using Flux: _big_finale, _layer_show
 
 """
-    UNetConditioned(in_channels, model_channels, num_timesteps; 
+    UNetConditioned(in_channels, model_channels, num_timesteps;
         channel_multipliers=(1, 2, 4),
         block_layer=ResBlock,
-        block_groups=8, 
+        block_groups=8,
         middle_attention=true,
         num_attention_heads=4,
         combine_embeddings=vcat,
-        num_classes=1, 
+        num_classes=1,
     )
 
 A convolutional autoencoder with time embeddings, class embeddings and skip connections.
@@ -75,7 +75,7 @@ function UNetConditioned(
     num_attention_heads::Int=4,
     middle_attention::Bool=true,
     combine_embeddings=vcat
-    ) where {N}
+) where {N}
     model_channels % block_groups == 0 ||
         error("The number of block_groups ($(block_groups)) must divide the number of model_channels ($model_channels)")
 
@@ -90,7 +90,7 @@ function UNetConditioned(
     )
     # Accept float label arrays (e.g., class distributions) via a linear projection
     # Input shape expected: (num_classes, batch)
-    class_embedding = Dense(num_classes, time_dim)
+    class_embedding = Dense(num_classes, time_dim, gelu)
     embed_dim = (combine_embeddings == vcat) ? 2 * time_dim : time_dim
 
     in_ch, out_ch = in_out[1]
@@ -124,6 +124,7 @@ function UNetConditioned(
 end
 
 function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, labels::AbstractArray{<:Real})
+    println(labels)
     downsize_factor = 2^(u.num_levels - 2)
     if (size(x, 1) % downsize_factor != 0) || (size(x, 2) % downsize_factor != 0)
         throw(DimensionMismatch(
@@ -131,6 +132,7 @@ function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, 
         )
     end
     time_emb = u.time_embedding(timesteps)
+    println(labels)
     class_emb = u.class_embedding(labels)
     emb = u.combine_embeddings(time_emb, class_emb)
     h = u.chain(x, emb)

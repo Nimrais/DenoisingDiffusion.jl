@@ -61,6 +61,24 @@ function randomly_set_unconditioned(
     labels
 end
 
+"""
+    randomly_set_unconditioned(labels::AbstractMatrix{<:Real}; prob_uncond=0.20)
+
+For float condition vectors (shape C×B), set a fraction of columns to the
+unconditional signal (all zeros) with probability `prob_uncond`.
+"""
+function randomly_set_unconditioned(
+    labels::AbstractMatrix{<:Real}; prob_uncond::Float64=0.20
+)
+    labels = copy(labels)
+    batch_size = size(labels, 2)
+    is_not_class_cond = rand(batch_size) .<= prob_uncond
+    if any(is_not_class_cond)
+        labels[:, is_not_class_cond] .= 0
+    end
+    labels
+end
+
 function update_history!(model, history, loss, val_data; prob_uncond::Float64=0.0)
     val_loss = batched_loss(loss, model, val_data; prob_uncond=prob_uncond)
     push!(history["val_loss"], val_loss)
