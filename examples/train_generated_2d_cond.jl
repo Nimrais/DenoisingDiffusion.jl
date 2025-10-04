@@ -6,6 +6,23 @@ using Printf
 
 using DenoisingDiffusion
 using DenoisingDiffusion: train!, batched_loss
+using Random
+
+import DenoisingDiffusion: randomly_set_unconditioned
+function randomly_set_unconditioned(
+    labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
+)
+    # with probability prob_uncond we train without class conditioning
+    L = copy(labels)
+    b = size(L, 2)
+    is_uncond = rand(b) .<= prob_uncond
+    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    L
+end
+
+
+Random.seed!(42)
+
 include("datasets.jl")
 include("utilities.jl")
 
@@ -25,17 +42,19 @@ X1 = normalize_neg_one_to_one(make_spiral(nsamples_per_class));
 X2 = normalize_neg_one_to_one(make_s_curve(nsamples_per_class));
 X3 = normalize_neg_one_to_one(make_moons(nsamples_per_class));
 
-X = hcat(X1, X2, X3)
-# label = 1 is for any/unguided diffusion
-labels = 1 .+ vcat(fill(1, nsamples_per_class), fill(2, nsamples_per_class), fill(3, nsamples_per_class))
+X = Float32.(hcat(X1, X2, X3))
+# one-hot Float32 class labels (num_classes, batch); zero vector = unguided
+labels_ids = vcat(fill(1, nsamples_per_class), fill(2, nsamples_per_class), fill(3, nsamples_per_class))
+labels = Float32.(Matrix(Flux.onehotbatch(labels_ids, 1:num_classes)))
 
 n_val = floor(Int, 0.1 * nsamples_per_class)
 X1_val = normalize_neg_one_to_one(make_spiral(n_val));
 X2_val = normalize_neg_one_to_one(make_s_curve(n_val));
 X3_val = normalize_neg_one_to_one(make_moons(n_val));
 
-X_val = hcat(X1_val, X2_val, X3_val)
-labels_val = 1 .+ vcat(fill(1, n_val), fill(2, n_val), fill(3, n_val))
+X_val = Float32.(hcat(X1_val, X2_val, X3_val))
+labels_val_ids = vcat(fill(1, n_val), fill(2, n_val), fill(3, n_val))
+labels_val = Float32.(Matrix(Flux.onehotbatch(labels_val_ids, 1:num_classes)))
 
 ### model
 model = ConditionalChain(
@@ -44,14 +63,14 @@ model = ConditionalChain(
         Dense(2, d_hid),
         Chain(SinusoidalPositionEmbedding(num_timesteps, d_hid),
             Dense(d_hid, d_hid)),
-        Embedding(1 + num_classes => d_hid)
+        Dense(num_classes, d_hid)
     ),
     swish,
     Parallel(
         .+,
         Dense(d_hid, d_hid),
         Chain(SinusoidalPositionEmbedding(num_timesteps, d_hid), Dense(d_hid, d_hid)),
-        Embedding(1 + num_classes => d_hid)
+        Dense(num_classes, d_hid)
     ),
     swish,
     Parallel(
@@ -59,7 +78,7 @@ model = ConditionalChain(
         Dense(d_hid, d_hid),
         Chain(SinusoidalPositionEmbedding(num_timesteps, d_hid),
             Dense(d_hid, d_hid)),
-        Embedding(1 + num_classes => d_hid)
+        Dense(num_classes, d_hid)
     ),
     swish,
     Dense(d_hid, 2),
@@ -75,7 +94,7 @@ diffusion = diffusion |> to_device
 train_data = Flux.DataLoader((X, labels) |> to_device; batchsize=32, shuffle=true);
 val_data = Flux.DataLoader((X_val, labels_val) |> to_device; batchsize=32, shuffle=false);
 loss_type = Flux.mse;
-loss(diffusion, x::AbstractArray, y::AbstractVector) = p_losses(diffusion, loss_type, x, y; to_device=to_device)
+loss(diffusion, x::AbstractArray, y::AbstractArray) = p_losses(diffusion, loss_type, x, y; to_device=to_device)
 opt = Adam(0.001);
 
 println("Calculating initial loss")
@@ -106,9 +125,9 @@ println("training")
 start_time = time_ns()
 opt_state = Flux.setup(opt, diffusion)
 history = train!(
-    loss, diffusion, train_data, opt_state, val_data; 
+    loss, diffusion, train_data, opt_state, val_data;
     num_epochs=num_epochs, prob_uncond=prob_uncond
-    )
+)
 end_time = time_ns() - start_time
 println("\ndone training")
 @printf "time taken: %.2fs\n" end_time / 1e9
@@ -132,18 +151,29 @@ canvas_train = plot(
     ylabel="loss",
     legend=:right, # :best, :right
     ylims=(0, Inf),
-    )
+)
 plot!(canvas_train, 1:length(history["val_loss"]), history["val_loss"], label="validation loss")
 savefig(canvas_train, joinpath(directory, "history.png"))
 display(canvas_train)
 
 canvases = []
-for label in 1:4
-    X0 = p_sample_loop(diffusion, 1000, label; guidance_scale=1.0f0)
+labels_unguided = zeros(Float32, num_classes, 1000)
+X0 = p_sample_loop(diffusion, labels_unguided; guidance_scale=1.0f0)
+p0 = scatter(X0[1, :], X0[2, :], alpha=0.5, label="",
+    aspectratio=:equal,
+    xlims=(-2, 2), ylims=(-2, 2),
+    title="unguided"
+)
+push!(canvases, p0)
+
+for k in 1:num_classes
+    labels_k = zeros(Float32, num_classes, 1000)
+    labels_k[k, :] .= 0.5
+    X0 = p_sample_loop(diffusion, labels_k; guidance_scale=1.0f0)
     p0 = scatter(X0[1, :], X0[2, :], alpha=0.5, label="",
         aspectratio=:equal,
         xlims=(-2, 2), ylims=(-2, 2),
-        title="label=$label"
+        title="label=$k"
     )
     push!(canvases, p0)
 end
