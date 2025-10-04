@@ -35,7 +35,8 @@ function p_losses(
         throw(DimensionMismatch("batch size != label length, $(size(x_start, N)) != $(length(labels))"))
     end
     x = q_sample(diffusion, x_start, timesteps, noise)
-    model_out = diffusion.denoise_fn(x, timesteps, labels)
+    labels32 = Float32.(labels)
+    model_out = diffusion.denoise_fn(x, timesteps, labels32)
     loss(model_out, noise)
 end
 
@@ -69,7 +70,7 @@ function p_losses(
     )
     timesteps = rand(1:diffusion.num_timesteps, batch_size) |> to_device
     noise = randn(eltype(eltype(diffusion)), size(x_start)) |> to_device
-    p_losses(diffusion, loss, x_start, timesteps, labels, noise)
+    p_losses(diffusion, loss, x_start, timesteps, Float32.(labels), noise)
 end
 
 function p_losses(
@@ -85,7 +86,8 @@ function p_losses(
         throw(DimensionMismatch("batch size != label columns, $batch_size != $(size(labels,2))"))
     end
     x = q_sample(diffusion, x_start, timesteps, noise)
-    model_out = diffusion.denoise_fn(x, timesteps, labels)
+    labels32 = Float32.(labels)
+    model_out = diffusion.denoise_fn(x, timesteps, labels32)
     loss(model_out, noise)
 end
 
@@ -103,7 +105,7 @@ function p_losses(
     )
     timesteps = rand(1:diffusion.num_timesteps, batch_size) |> to_device
     noise = randn(eltype(eltype(diffusion)), size(x_start)) |> to_device
-    p_losses(diffusion, loss, x_start, timesteps, labels, noise)
+    p_losses(diffusion, loss, x_start, timesteps, Float32.(labels), noise)
 end
 
 # Float32 matrix label overloads (for Dense-based class embeddings)
@@ -267,10 +269,10 @@ function p_sample(
     guidance_scale::AbstractFloat=1.0f0
 )
     if guidance_scale == 1.0f0
-        x_start, pred_noise = denoise(diffusion, x, timesteps, labels)
+        x_start, pred_noise = denoise(diffusion, x, timesteps, Float32.(labels))
     else
         x_start, pred_noise = classifier_free_guidance(
-            diffusion, x, timesteps, labels; guidance_scale=guidance_scale
+            diffusion, x, timesteps, Float32.(labels); guidance_scale=guidance_scale
         )
     end
     if clip_denoised
@@ -297,10 +299,10 @@ function p_sample(
     guidance_scale::AbstractFloat=1.0f0
 )
     if guidance_scale == 1.0f0
-        x_start, pred_noise = denoise(diffusion, x, timesteps, labels)
+        x_start, pred_noise = denoise(diffusion, x, timesteps, Float32.(labels))
     else
         x_start, pred_noise = classifier_free_guidance(
-            diffusion, x, timesteps, labels; guidance_scale=guidance_scale
+            diffusion, x, timesteps, Float32.(labels); guidance_scale=guidance_scale
         )
     end
     if clip_denoised
@@ -349,7 +351,7 @@ function denoise(
     timesteps::AbstractVector{Int},
     labels::AbstractVector{Float64}
 )
-    noise = diffusion.denoise_fn(x, timesteps, labels)
+    noise = diffusion.denoise_fn(x, timesteps, Float32.(labels))
     x_start = predict_start_from_noise(diffusion, x, timesteps, noise)
     x_start, noise
 end
@@ -360,7 +362,7 @@ function denoise(
     timesteps::AbstractVector{Int},
     labels::AbstractMatrix{Float64}
 )
-    noise = diffusion.denoise_fn(x, timesteps, labels)
+    noise = diffusion.denoise_fn(x, timesteps, Float32.(labels))
     x_start = predict_start_from_noise(diffusion, x, timesteps, noise)
     x_start, noise
 end
@@ -390,11 +392,10 @@ function classifier_free_guidance(
     timesteps_double = vcat(timesteps, timesteps)
 
 
-    #labels_both = vcat(labels, fill(one(first(labels)), batch_size))
-
-    C = size(labels, 1)
-    labels_uncond = zeros(eltype(labels), C, batch_size)
-    labels_both = hcat(labels, labels_uncond)
+    labels32 = Float32.(labels)
+    C = size(labels32, 1)
+    labels_uncond = zeros(Float32, C, batch_size)
+    labels_both = hcat(labels32, labels_uncond)
 
     noise_both = diffusion.denoise_fn(x_double, timesteps_double, labels_both)
 
@@ -421,11 +422,10 @@ function classifier_free_guidance(
     timesteps_double = vcat(timesteps, timesteps)
 
 
-    #labels_both = vcat(labels, fill(one(first(labels)), batch_size))
-
-    C = size(labels, 1)
-    labels_uncond = zeros(eltype(labels), C, batch_size)
-    labels_both = hcat(labels, labels_uncond)
+    labels32 = Float32.(labels)
+    C = size(labels32, 1)
+    labels_uncond = zeros(Float32, C, batch_size)
+    labels_both = hcat(labels32, labels_uncond)
 
     noise_both = diffusion.denoise_fn(x_double, timesteps_double, labels_both)
 

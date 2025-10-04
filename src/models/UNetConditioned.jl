@@ -120,7 +120,10 @@ function UNetConditioned(
         final=Conv((3, 3), model_channels => in_channels, stride=(1, 1), pad=(1, 1))
     )
 
-    UNetConditioned(time_embed, class_embedding, combine_embeddings, chain, length(channel_multipliers) + 1)
+    # Ensure all parameters are Float32 to keep conditioned model in f32
+    Flux.f32(
+        UNetConditioned(time_embed, class_embedding, combine_embeddings, chain, length(channel_multipliers) + 1)
+    )
 end
 
 function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, labels::AbstractArray{Float32})
