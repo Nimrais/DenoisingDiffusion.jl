@@ -1,6 +1,6 @@
 using MLDatasets
 using Flux
-using CUDA, cuDNN
+#using CUDA, cuDNN
 using Dates
 using BSON, JSON
 using Printf
@@ -25,7 +25,7 @@ combine_embeddings = vcat
 num_epochs = 10
 prob_uncond = 0.2
 loss_type = Flux.mse;
-to_device = gpu # cpu or gpu
+to_device = cpu # cpu or gpu
 num_classes = 10
 
 ### data
@@ -131,9 +131,9 @@ println("saved history to $history_path")
 let diffusion = cpu(diffusion), opt_state = cpu(opt_state)
     # save opt_state in case want to resume training
     BSON.bson(
-        output_path, 
+        output_path,
         Dict(
-            :diffusion => diffusion, 
+            :diffusion => diffusion,
             :opt_state => opt_state
         )
     )
@@ -148,7 +148,7 @@ canvas_train = plot(
     ylabel="loss",
     legend=:right, # :best, :right
     ylims=(0, Inf),
-    )
+)
 plot!(canvas_train, 1:length(history["val_loss"]), history["val_loss"], label="val_loss")
 savefig(canvas_train, joinpath(output_directory, "history.png"))
 display(canvas_train)
