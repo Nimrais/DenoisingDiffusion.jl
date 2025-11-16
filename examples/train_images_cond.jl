@@ -191,6 +191,39 @@ canvas_samples = plot([plot(imgs_all[:, :, i], title="digit=$(i-1)") for i in 1:
 savefig(canvas_samples, joinpath(output_directory, "samples.png"))
 display(canvas_samples)
 
+begin
+    selected_class_1 = 2
+    selected_class_2 = 9 
+    N_images = 102
+    # One-hot labels for each class for sampling
+    pre_one_hot = zeros(10, N_images)
+    for i in 1:num_classes
+        pre_one_hot[selected_class_1, i] = 0.5;
+        pre_one_hot[selected_class_2, i] = 0.5;
+    end
+    pre_one_hot[selected_class_1, N_images-2] = 1.0
+    pre_one_hot[selected_class_2, N_images-1] = 1.0
+    labels_all = pre_one_hot |> to_device
+    X0_all = p_sample_loop(diffusion, labels_all; guidance_scale=1.0f0, to_device=to_device);
+    X0_all = X0_all |> cpu;
+end
+
+begin
+    average_generated_images = X0_all[:, :, 1, 1:100]
+    mean_over_images = mean(average_generated_images, dims=3)
+    
+    mean_image = convert2image(trainset, mean_over_images)
+    imgs_clean = convert2image(trainset, X0_all[:, :, 1, 101:102])
+    
+    canvas_comparison = plot([
+        plot(mean_image[:, :, 1], title="mean_image"),
+        plot(imgs_clean[:, :, 1], title = "clean image $(selected_class_1)"),
+        plot(imgs_clean[:, :, 2], title = "clean image $(selected_class_2)")]..., ticks=nothing)
+    
+    display(canvas_comparison)
+end
+
+
 # for label in 1:num_classes
 #     println("press enter for next label")
 #     readline()
