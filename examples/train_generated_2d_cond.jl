@@ -8,15 +8,16 @@ using DenoisingDiffusion
 using DenoisingDiffusion: train!, batched_loss
 using Random
 
-import DenoisingDiffusion: randomly_set_unconditioned
 function randomly_set_unconditioned(
     labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
 )
-    # with probability prob_uncond we train without class conditioning
+    # Zero full label columns with probability prob_uncond (device-safe)
     L = copy(labels)
     b = size(L, 2)
-    is_uncond = rand(b) .<= prob_uncond
-    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    r = similar(L, 1, b)
+    rand!(r)
+    keep = r .> prob_uncond
+    L .= L .* Float32.(keep)
     L
 end
 

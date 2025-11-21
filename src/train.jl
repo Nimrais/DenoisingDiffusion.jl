@@ -53,11 +53,13 @@ end
 function randomly_set_unconditioned(
     labels::AbstractVector{Int}; prob_uncond::Float64=0.20
 )
-    # with probability prob_uncond we train without class conditioning
+    # With probability prob_uncond, drop conditioning.
+    # For integer labels, use 0 as the "unconditional" sentinel that will
+    # later be converted to an all-zeros one-hot column.
     labels = copy(labels)
     batch_size = length(labels)
     is_not_class_cond = rand(batch_size) .<= prob_uncond
-    labels[is_not_class_cond] .= 1
+    labels[is_not_class_cond] .= 0
     labels
 end
 
@@ -65,22 +67,27 @@ end
 function randomly_set_unconditioned(
     labels::AbstractVector{Float32}; prob_uncond::Float64=0.20
 )
-    # with probability prob_uncond we train without class conditioning
+    # With probability prob_uncond, drop conditioning by setting label to 0.0.
     labels = copy(labels)
     batch_size = length(labels)
     is_not_class_cond = rand(batch_size) .<= prob_uncond
-    labels[is_not_class_cond] .= 1.0
+    labels[is_not_class_cond] .= 0.0f0
     labels
 end
 
 function randomly_set_unconditioned(
     labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
 )
-    # with probability prob_uncond we train without class conditioning
+    # With probability prob_uncond, zero out the entire label column (classifier-free uncond).
+    # Implemented in a device-safe way (CPU or GPU) without boolean indexing on CuArrays.
     L = copy(labels)
     b = size(L, 2)
-    is_uncond = rand(b) .<= prob_uncond
-    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    # Build a 1×B mask on the same device as labels
+    r = similar(L, 1, b)
+    rand!(r)  # uniform [0,1)
+    keep = r .> prob_uncond  # true => keep conditioned; false => uncond
+    # Zero full columns by broadcasting the mask; avoid boolean indexing on device
+    L .= L .* Float32.(keep)
     L
 end
 

@@ -140,6 +140,19 @@ function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, 
     h
 end
 
+function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, labels::AbstractVector{Float32})
+    # Treat a Float32 label vector (batch,) as a single continuous conditioning channel (1 × batch)
+    labels_mat = reshape(labels, 1, :)
+    u(x, timesteps, labels_mat)
+end
+
+function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int}, labels::AbstractVector{Float64})
+    # Accept Float64 vector by converting to Float32 and reshaping to (1 × batch)
+    labels32 = Float32.(labels)
+    labels_mat = reshape(labels32, 1, :)
+    u(x, timesteps, labels_mat)
+end
+
 function (u::UNetConditioned)(x::AbstractArray, timesteps::AbstractVector{Int})
     batch_size = length(timesteps)
     # Unconditional labels as zeros distribution (no conditioning signal)

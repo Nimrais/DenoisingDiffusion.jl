@@ -17,15 +17,18 @@ Random.seed!(42)
 include("utilities.jl")
 
 
-import DenoisingDiffusion: randomly_set_unconditioned
+# Rewrite: device-safe classifier-free unconditioning mask (no boolean indexing on CuArray)
 function randomly_set_unconditioned(
     labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
 )
-    # with probability prob_uncond we train without class conditioning
+    # Zero out entire label columns with probability prob_uncond
+    # Works on CPU and GPU by avoiding boolean indexing on CuArrays.
     L = copy(labels)
     b = size(L, 2)
-    is_uncond = rand(b) .<= prob_uncond
-    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    r = similar(L, 1, b)
+    rand!(r)
+    keep = r .> prob_uncond           # 1×B Bool mask
+    L .= L .* Float32.(keep)          # broadcast mask over rows
     L
 end
 
@@ -177,9 +180,9 @@ all_classes = collect(1:num_classes)
 # One-hot labels for each class for sampling
 pre_one_hot = zeros(10, 12)
 for i in 1:num_classes
-    pre_one_hot[1, i] = 0.0;
-    pre_one_hot[4, i] = 0.4;
-    pre_one_hot[7, i] = 0.6;
+    pre_one_hot[1, i] = 0.0
+    pre_one_hot[4, i] = 0.4
+    pre_one_hot[7, i] = 0.6
 end
 pre_one_hot[4, 11] = 1.0
 pre_one_hot[7, 12] = 1.0
@@ -193,33 +196,33 @@ display(canvas_samples)
 
 begin
     selected_class_1 = 2
-    selected_class_2 = 9 
+    selected_class_2 = 9
     N_images = 102
     # One-hot labels for each class for sampling
     pre_one_hot = zeros(10, N_images)
     for i in 1:num_classes
-        pre_one_hot[selected_class_1, i] = 0.5;
-        pre_one_hot[selected_class_2, i] = 0.5;
+        pre_one_hot[selected_class_1, i] = 1.0
+        pre_one_hot[selected_class_2, i] = 0.0
     end
     pre_one_hot[selected_class_1, N_images-2] = 1.0
     pre_one_hot[selected_class_2, N_images-1] = 1.0
     labels_all = pre_one_hot |> to_device
-    X0_all = p_sample_loop(diffusion, labels_all; guidance_scale=1.0f0, to_device=to_device);
-    X0_all = X0_all |> cpu;
+    X0_all = p_sample_loop(diffusion, labels_all; guidance_scale=1.0f0, to_device=to_device)
+    X0_all = X0_all |> cpu
 end
 
 begin
     average_generated_images = X0_all[:, :, 1, 1:100]
     mean_over_images = mean(average_generated_images, dims=3)
-    
+
     mean_image = convert2image(trainset, mean_over_images)
     imgs_clean = convert2image(trainset, X0_all[:, :, 1, 101:102])
-    
+
     canvas_comparison = plot([
-        plot(mean_image[:, :, 1], title="mean_image"),
-        plot(imgs_clean[:, :, 1], title = "clean image $(selected_class_1)"),
-        plot(imgs_clean[:, :, 2], title = "clean image $(selected_class_2)")]..., ticks=nothing)
-    
+            plot(mean_image[:, :, 1], title="mean_image"),
+            plot(imgs_clean[:, :, 1], title="clean image $(selected_class_1)"),
+            plot(imgs_clean[:, :, 2], title="clean image $(selected_class_2)")]..., ticks=nothing)
+
     display(canvas_comparison)
 end
 

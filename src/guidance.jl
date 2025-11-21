@@ -22,6 +22,41 @@ function p_losses(
     loss(model_out, noise)
 end
 
+# -- Helper: convert integer class ids to one-hot Float32 matrix (C × B).
+# A label of 0 is treated as unconditional: it maps to an all-zeros column.
+function _labels_to_matrix(diffusion::GaussianDiffusion, labels::AbstractVector{Int})
+    denoise_fn = diffusion.denoise_fn
+    if !(:class_embedding in fieldnames(typeof(denoise_fn)))
+        throw(ArgumentError("Integer labels provided but the denoiser has no class_embedding; pass one-hot Float32 labels instead."))
+    end
+    C = size(getfield(denoise_fn, :class_embedding).weight, 2)
+    B = length(labels)
+    L = zeros(Float32, C, B)
+    @inbounds for j in 1:B
+        lj = labels[j]
+        if 1 <= lj <= C
+            L[lj, j] = 1.0f0
+        elseif lj == 0
+            # unconditional -> all zeros column
+        else
+            throw(DomainError(lj, "Class index out of range 1..$C or 0 for unconditional"))
+        end
+    end
+    L
+end
+
+# Vector{Int} labels overload: convert to one-hot and reuse Float32-matrix path
+function p_losses(
+    diffusion::GaussianDiffusion,
+    loss,
+    x_start::AbstractArray,
+    labels::AbstractVector{Int},
+    ; to_device=cpu
+)
+    L = _labels_to_matrix(diffusion, labels) |> to_device
+    p_losses(diffusion, loss, x_start, L; to_device=to_device)
+end
+
 # Support Float64 vector labels
 function p_losses(
     diffusion::GaussianDiffusion,
@@ -172,6 +207,15 @@ function p_sample_loop(
     x
 end
 
+# Int label overload: convert to one-hot Float32 matrix and reuse matrix path
+function p_sample_loop(
+    diffusion::GaussianDiffusion, shape::NTuple, labels::AbstractVector{Int}
+    ; clip_denoised::Bool=true, to_device=cpu, guidance_scale::AbstractFloat=1.0f0
+)
+    L = _labels_to_matrix(diffusion, labels) |> to_device
+    p_sample_loop(diffusion, shape, L; clip_denoised=clip_denoised, to_device=to_device, guidance_scale=guidance_scale)
+end
+
 function p_sample_loop(
     diffusion::GaussianDiffusion, shape::NTuple, labels::AbstractMatrix{Float64}
     ; clip_denoised::Bool=true, to_device=cpu, guidance_scale::AbstractFloat=1.0f0
@@ -195,6 +239,11 @@ function p_sample_loop(diffusion::GaussianDiffusion, batch_size::Int, label::Flo
 end
 
 function p_sample_loop(diffusion::GaussianDiffusion, labels::AbstractVector{Float64}; options...)
+    batch_size = length(labels)
+    p_sample_loop(diffusion, (diffusion.data_shape..., batch_size), labels; options...)
+end
+
+function p_sample_loop(diffusion::GaussianDiffusion, labels::AbstractVector{Int}; options...)
     batch_size = length(labels)
     p_sample_loop(diffusion, (diffusion.data_shape..., batch_size), labels; options...)
 end
@@ -273,6 +322,35 @@ function p_sample(
     else
         x_start, pred_noise = classifier_free_guidance(
             diffusion, x, timesteps, Float32.(labels); guidance_scale=guidance_scale
+        )
+    end
+    if clip_denoised
+        clamp!(x_start, -1, 1)
+    end
+    posterior_mean, posterior_variance = q_posterior_mean_variance(diffusion, x_start, x, timesteps)
+    x_prev = posterior_mean
+    if add_noise
+        x_prev += sqrt.(posterior_variance) .* noise
+    end
+    x_prev, x_start
+end
+
+function p_sample(
+    diffusion::GaussianDiffusion,
+    x::AbstractArray,
+    timesteps::AbstractVector{Int},
+    labels::AbstractVector{Float32},
+    noise::AbstractArray
+    ;
+    clip_denoised::Bool=true,
+    add_noise::Bool=true,
+    guidance_scale::AbstractFloat=1.0f0
+)
+    if guidance_scale == 1.0f0
+        x_start, pred_noise = denoise(diffusion, x, timesteps, labels)
+    else
+        x_start, pred_noise = classifier_free_guidance(
+            diffusion, x, timesteps, labels; guidance_scale=guidance_scale
         )
     end
     if clip_denoised
@@ -412,6 +490,35 @@ function classifier_free_guidance(
     diffusion::GaussianDiffusion,
     x::AbstractArray,
     timesteps::AbstractVector{Int},
+    labels::AbstractVector{Float32}
+    ; guidance_scale=1.0f0
+)
+    T = eltype(eltype(diffusion))
+    guidance_scale_ = convert(T, guidance_scale)
+    batch_size = size(x)[end]
+    x_double = cat(x, x, dims=ndims(x))
+    timesteps_double = vcat(timesteps, timesteps)
+
+    C = 1
+    labels_mat = reshape(labels, C, batch_size)
+    labels_uncond = zeros(Float32, C, batch_size)
+    labels_both = hcat(labels_mat, labels_uncond)
+
+    noise_both = diffusion.denoise_fn(x_double, timesteps_double, labels_both)
+
+    inds = ntuple(Returns(:), ndims(x_double) - 1)
+    ϵ_cond = view(noise_both, inds..., 1:batch_size)
+    ϵ_uncond = view(noise_both, inds..., (batch_size+1):(2*batch_size))
+    noise = ϵ_uncond + guidance_scale_ * (ϵ_cond - ϵ_uncond)
+
+    x_start = predict_start_from_noise(diffusion, x, timesteps, noise)
+    x_start, noise
+end
+
+function classifier_free_guidance(
+    diffusion::GaussianDiffusion,
+    x::AbstractArray,
+    timesteps::AbstractVector{Int},
     labels::AbstractMatrix{Float64}
     ; guidance_scale=1.0f0
 )
@@ -452,7 +559,8 @@ function classifier_free_guidance(
     timesteps_double = vcat(timesteps, timesteps)
 
     C = size(labels, 1)
-    labels_uncond = zeros(eltype(labels), C, batch_size)
+    labels_uncond = similar(labels, C, batch_size)
+    fill!(labels_uncond, zero(eltype(labels)))
     labels_both = hcat(labels, labels_uncond)
 
     noise_both = diffusion.denoise_fn(x_double, timesteps_double, labels_both)
@@ -486,5 +594,28 @@ end
 
 function p_sample_loop(diffusion::GaussianDiffusion, labels::AbstractMatrix{Float32}; options...)
     batch_size = size(labels, 2)
+    p_sample_loop(diffusion, (diffusion.data_shape..., batch_size), labels; options...)
+end
+
+# Float32 vector labels overloads
+function p_sample_loop(
+    diffusion::GaussianDiffusion, shape::NTuple, labels::AbstractVector{Float32}
+    ; clip_denoised::Bool=true, to_device=cpu, guidance_scale::AbstractFloat=1.0f0
+)
+    T = eltype(eltype(diffusion))
+    x = randn(T, shape) |> to_device
+    @showprogress "Sampling ..." for i in diffusion.num_timesteps:-1:1
+        timesteps = fill(i, shape[end]) |> to_device
+        noise = randn(T, size(x)) |> to_device
+        x, x_start = p_sample(
+            diffusion, x, timesteps, labels, noise
+            ; clip_denoised=clip_denoised, add_noise=(i != 1), guidance_scale=guidance_scale
+        )
+    end
+    x
+end
+
+function p_sample_loop(diffusion::GaussianDiffusion, labels::AbstractVector{Float32}; options...)
+    batch_size = length(labels)
     p_sample_loop(diffusion, (diffusion.data_shape..., batch_size), labels; options...)
 end
