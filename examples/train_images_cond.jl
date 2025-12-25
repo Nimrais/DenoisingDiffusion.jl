@@ -10,19 +10,36 @@ using Plots, Images
 
 using DenoisingDiffusion
 using DenoisingDiffusion: train!, split_validation, batched_loss
+using Random
+
+Random.seed!(42)
+
 include("utilities.jl")
 
+
+import DenoisingDiffusion: randomly_set_unconditioned
+function randomly_set_unconditioned(
+    labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
+)
+    # with probability prob_uncond we train without class conditioning
+    L = copy(labels)
+    b = size(L, 2)
+    is_uncond = rand(b) .<= prob_uncond
+    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    L
+end
+
 ### settings
-num_timesteps = 100
+num_timesteps = 1000
 seed = 2714
 dataset = :MNIST
-data_directory = "path\\to\\data"
+data_directory = "~/mnist"
 output_directory = joinpath("outputs", "$(dataset)_" * Dates.format(now(), "yyyymmdd_HHMM"))
 model_channels = 16
 learning_rate = 0.001
 batch_size = 32
 combine_embeddings = vcat
-num_epochs = 10
+num_epochs = 50
 prob_uncond = 0.2
 loss_type = Flux.mse;
 to_device = gpu # cpu or gpu
@@ -32,7 +49,9 @@ num_classes = 10
 
 trainset = MNIST(Float32, :train, dir=data_directory);
 norm_data = normalize_neg_one_to_one(reshape(trainset.features, 28, 28, 1, :));
-labels = 2 .+ trainset.targets; # 1->default, 2->0, 3->1, ..., 9->11
+# one-hot Float32 class labels (num_classes, batch); zero vector = unguided during training via randomly_set_unconditioned
+labels_ids = 1 .+ Int.(vec(trainset.targets))
+labels = Float32.(Matrix(Flux.onehotbatch(labels_ids, 1:num_classes)))
 train_x, val_x = split_validation(MersenneTwister(seed), norm_data, labels);
 
 println("train data:      ", size(train_x[1]), "--", size(train_x[2]))
@@ -64,7 +83,8 @@ diffusion = diffusion |> to_device
 
 train_data = Flux.DataLoader(train_x |> to_device; batchsize=batch_size, shuffle=true);
 val_data = Flux.DataLoader(val_x |> to_device; batchsize=batch_size, shuffle=false);
-loss(diffusion, x::AbstractArray, y::AbstractVector) = p_losses(diffusion, loss_type, x, y; to_device=to_device)
+# Accept matrix labels for class-conditioned training
+loss(diffusion, x::AbstractArray, y::AbstractArray) = p_losses(diffusion, loss_type, x, y; to_device=to_device)
 if isdefined(Main, :opt_state)
     opt = extract_rule_from_tree(opt_state)
     println("existing optimiser: ")
@@ -131,9 +151,9 @@ println("saved history to $history_path")
 let diffusion = cpu(diffusion), opt_state = cpu(opt_state)
     # save opt_state in case want to resume training
     BSON.bson(
-        output_path, 
+        output_path,
         Dict(
-            :diffusion => diffusion, 
+            :diffusion => diffusion,
             :opt_state => opt_state
         )
     )
@@ -148,28 +168,74 @@ canvas_train = plot(
     ylabel="loss",
     legend=:right, # :best, :right
     ylims=(0, Inf),
-    )
+)
 plot!(canvas_train, 1:length(history["val_loss"]), history["val_loss"], label="val_loss")
 savefig(canvas_train, joinpath(output_directory, "history.png"))
 display(canvas_train)
 
 all_classes = collect(1:num_classes)
-X0_all = p_sample_loop(diffusion, all_classes; guidance_scale=2.0f0, to_device=to_device);
+# One-hot labels for each class for sampling
+pre_one_hot = zeros(10, 12)
+for i in 1:num_classes
+    pre_one_hot[1, i] = 0.0;
+    pre_one_hot[4, i] = 0.4;
+    pre_one_hot[7, i] = 0.6;
+end
+pre_one_hot[4, 11] = 1.0
+pre_one_hot[7, 12] = 1.0
+labels_all = pre_one_hot |> to_device
+X0_all = p_sample_loop(diffusion, labels_all; guidance_scale=1.0f0, to_device=to_device);
 X0_all = X0_all |> cpu;
 imgs_all = convert2image(trainset, X0_all[:, :, 1, :]);
-canvas_samples = plot([plot(imgs_all[:, :, i], title="digit=$(i-2)") for i in 1:num_classes]..., ticks=nothing)
+canvas_samples = plot([plot(imgs_all[:, :, i], title="digit=$(i-1)") for i in 1:12]..., ticks=nothing)
 savefig(canvas_samples, joinpath(output_directory, "samples.png"))
 display(canvas_samples)
 
-for label in 1:num_classes
-    println("press enter for next label")
-    readline()
-    X0 = p_sample_loop(diffusion, 12, label; guidance_scale=2.0f0, to_device=to_device)
-    X0 = X0 |> cpu
-    imgs = convert2image(trainset, X0[:, :, 1, :])
-    canvas = plot([plot(imgs[:, :, i]) for i in 1:12]..., plot_title="label=$label", ticks=nothing)
-    display(canvas)
+begin
+    selected_class_1 = 2
+    selected_class_2 = 9 
+    N_images = 102
+    # One-hot labels for each class for sampling
+    pre_one_hot = zeros(10, N_images)
+    for i in 1:num_classes
+        pre_one_hot[selected_class_1, i] = 0.5;
+        pre_one_hot[selected_class_2, i] = 0.5;
+    end
+    pre_one_hot[selected_class_1, N_images-2] = 1.0
+    pre_one_hot[selected_class_2, N_images-1] = 1.0
+    labels_all = pre_one_hot |> to_device
+    X0_all = p_sample_loop(diffusion, labels_all; guidance_scale=1.0f0, to_device=to_device);
+    X0_all = X0_all |> cpu;
 end
+
+begin
+    average_generated_images = X0_all[:, :, 1, 1:100]
+    mean_over_images = mean(average_generated_images, dims=3)
+    
+    mean_image = convert2image(trainset, mean_over_images)
+    imgs_clean = convert2image(trainset, X0_all[:, :, 1, 101:102])
+    
+    canvas_comparison = plot([
+        plot(mean_image[:, :, 1], title="mean_image"),
+        plot(imgs_clean[:, :, 1], title = "clean image $(selected_class_1)"),
+        plot(imgs_clean[:, :, 2], title = "clean image $(selected_class_2)")]..., ticks=nothing)
+    
+    display(canvas_comparison)
+end
+
+
+# for label in 1:num_classes
+#     println("press enter for next label")
+#     readline()
+#     # Build a labels matrix selecting the current class
+#     labels_k = zeros(Float32, num_classes, 12)
+#     labels_k[label, :] .= 1
+#     X0 = p_sample_loop(diffusion, labels_k; guidance_scale=2.0f0, to_device=to_device)
+#     X0 = X0 |> cpu
+#     imgs = convert2image(trainset, X0[:, :, 1, :])
+#     canvas = plot([plot(imgs[:, :, i]) for i in 1:12]..., plot_title="digit=$(label-1)", ticks=nothing)
+#     display(canvas)
+# end
 
 println("press enter to finish")
 readline()

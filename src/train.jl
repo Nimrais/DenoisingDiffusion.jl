@@ -8,7 +8,7 @@ function train!(loss, model, data::DataLoader, opt_state, val_data;
     save_after_epoch::Bool=false,
     save_dir::String="",
     prob_uncond::Float64=0.0,
-    )
+)
     history = Dict(
         "epoch_size" => length(data),
         "mean_batch_loss" => Float64[],
@@ -21,9 +21,9 @@ function train!(loss, model, data::DataLoader, opt_state, val_data;
         total_loss = 0.0
         for (idx, x) in enumerate(data)
             if (x isa Tuple)
-                y = prob_uncond == 0.0 ? 
-                    x[2] : 
-                    randomly_set_unconditioned(x[2]; prob_uncond=prob_uncond) 
+                y = prob_uncond == 0.0 ?
+                    x[2] :
+                    randomly_set_unconditioned(x[2]; prob_uncond=prob_uncond)
                 x_splat = (x[1], y)
             else
                 x_splat = (x,)
@@ -52,13 +52,36 @@ end
 
 function randomly_set_unconditioned(
     labels::AbstractVector{Int}; prob_uncond::Float64=0.20
-    )
+)
     # with probability prob_uncond we train without class conditioning
     labels = copy(labels)
     batch_size = length(labels)
     is_not_class_cond = rand(batch_size) .<= prob_uncond
     labels[is_not_class_cond] .= 1
     labels
+end
+
+
+function randomly_set_unconditioned(
+    labels::AbstractVector{Float32}; prob_uncond::Float64=0.20
+)
+    # with probability prob_uncond we train without class conditioning
+    labels = copy(labels)
+    batch_size = length(labels)
+    is_not_class_cond = rand(batch_size) .<= prob_uncond
+    labels[is_not_class_cond] .= 1.0
+    labels
+end
+
+function randomly_set_unconditioned(
+    labels::AbstractMatrix{Float32}; prob_uncond::Float64=0.20
+)
+    # with probability prob_uncond we train without class conditioning
+    L = copy(labels)
+    b = size(L, 2)
+    is_uncond = rand(b) .<= prob_uncond
+    L[:, is_uncond] .= 0.0f0  # zero vector = no class conditioning
+    L
 end
 
 function update_history!(model, history, loss, val_data; prob_uncond::Float64=0.0)
@@ -72,9 +95,9 @@ function batched_loss(loss, model, data::DataLoader; prob_uncond::Float64=0.0)
     total_loss = 0.0
     for x in data
         if (x isa Tuple)
-            y = prob_uncond == 0.0 ? 
-                x[2] : 
-                randomly_set_unconditioned(x[2]; prob_uncond=prob_uncond)  
+            y = prob_uncond == 0.0 ?
+                x[2] :
+                randomly_set_unconditioned(x[2]; prob_uncond=prob_uncond)
             x_splat = (x[1], y)
         else
             x_splat = (x,)
@@ -97,7 +120,7 @@ function split_validation(rng::AbstractRNG, data::AbstractArray; frac=0.1)
     ntrain = nsamples - floor(Int, frac * nsamples)
     inds_start = ntuple(Returns(:), ndims(data) - 1)
     train_data = data[inds_start..., idxs[1:ntrain]]
-    val_data = data[inds_start..., idxs[(ntrain + 1):end]]
+    val_data = data[inds_start..., idxs[(ntrain+1):end]]
     train_data, val_data
 end
 
@@ -111,7 +134,7 @@ function split_validation(rng::AbstractRNG, data::AbstractArray, labels::Abstrac
     train_data = data[inds_start..., idxs_train]
     train_labels = ndims(labels) == 2 ? labels[:, idxs_train] : labels[idxs_train]
     ## validation data
-    idxs_val = idxs[(ntrain + 1):end]
+    idxs_val = idxs[(ntrain+1):end]
     val_data = data[inds_start..., idxs_val]
     val_labels = ndims(labels) == 2 ? labels[:, idxs_val] : labels[idxs_val]
     (train_data, train_labels), (val_data, val_labels)
@@ -122,7 +145,7 @@ end
 
 Caculates `f(g(x), y)` for each `(x, y)` in data and returns a weighted sum by batch size.
 If `f` takes the mean this will recover the full sample mean.
-Reduces memory load for `f` and `g`. 
+Reduces memory load for `f` and `g`.
 """
 function batched_metric(g, f, data::DataLoader)
     result = 0.0
